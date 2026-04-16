@@ -39,6 +39,26 @@ var (
 	ErrAdjustWouldExpire          = infraerrors.BadRequest("ADJUST_WOULD_EXPIRE", "adjustment would result in expired subscription (remaining days must be > 0)")
 )
 
+// addValidityDays adds validity by exact 24-hour blocks.
+// This keeps "1 day" semantics as strict 24h from activation time instead of calendar-day rollover.
+func addValidityDays(base time.Time, days int) time.Time {
+	return base.Add(time.Duration(days) * 24 * time.Hour)
+}
+
+// resetAllUsageWindows resets all usage windows (daily/weekly/monthly) to the same window start.
+func (s *SubscriptionService) resetAllUsageWindows(ctx context.Context, subscriptionID int64, windowStart time.Time) error {
+	if err := s.userSubRepo.ResetDailyUsage(ctx, subscriptionID, windowStart); err != nil {
+		return err
+	}
+	if err := s.userSubRepo.ResetWeeklyUsage(ctx, subscriptionID, windowStart); err != nil {
+		return err
+	}
+	if err := s.userSubRepo.ResetMonthlyUsage(ctx, subscriptionID, windowStart); err != nil {
+		return err
+	}
+	return nil
+}
+
 // SubscriptionService 订阅服务
 type SubscriptionService struct {
 	groupRepo           GroupRepository
@@ -198,10 +218,10 @@ func (s *SubscriptionService) AssignOrExtendSubscription(ctx context.Context, in
 
 		if existingSub.ExpiresAt.After(now) {
 			// 未过期：从当前过期时间累加
-			newExpiresAt = existingSub.ExpiresAt.AddDate(0, 0, validityDays)
+			newExpiresAt = addValidityDays(existingSub.ExpiresAt, validityDays)
 		} else {
 			// 已过期：从当前时间开始计算
-			newExpiresAt = now.AddDate(0, 0, validityDays)
+			newExpiresAt = addValidityDays(now, validityDays)
 		}
 
 		// 确保不超过最大过期时间
@@ -228,6 +248,13 @@ func (s *SubscriptionService) AssignOrExtendSubscription(ctx context.Context, in
 				_ = tx.Rollback()
 				return nil, false, fmt.Errorf("update subscription status: %w", err)
 			}
+		}
+
+		// 续订后重置当前配额窗口（daily/weekly/monthly），从续订时刻开始计算。
+		windowStart := now
+		if err := s.resetAllUsageWindows(txCtx, existingSub.ID, windowStart); err != nil {
+			_ = tx.Rollback()
+			return nil, false, fmt.Errorf("reset subscription usage windows: %w", err)
 		}
 
 		// 追加备注
@@ -295,7 +322,7 @@ func (s *SubscriptionService) createSubscription(ctx context.Context, input *Ass
 	}
 
 	now := time.Now()
-	expiresAt := now.AddDate(0, 0, validityDays)
+	expiresAt := addValidityDays(now, validityDays)
 	if expiresAt.After(MaxExpiresAt) {
 		expiresAt = MaxExpiresAt
 	}
@@ -434,7 +461,7 @@ func detectAssignSemanticConflict(existing *UserSubscription, input *AssignSubsc
 
 	normalizedDays := normalizeAssignValidityDays(input.ValidityDays)
 	if !existing.StartsAt.IsZero() {
-		expectedExpiresAt := existing.StartsAt.AddDate(0, 0, normalizedDays)
+		expectedExpiresAt := addValidityDays(existing.StartsAt, normalizedDays)
 		if expectedExpiresAt.After(MaxExpiresAt) {
 			expectedExpiresAt = MaxExpiresAt
 		}
@@ -515,10 +542,10 @@ func (s *SubscriptionService) ExtendSubscription(ctx context.Context, subscripti
 	var newExpiresAt time.Time
 	if isExpired {
 		// 已过期：从当前时间开始增加天数
-		newExpiresAt = now.AddDate(0, 0, days)
+		newExpiresAt = addValidityDays(now, days)
 	} else {
 		// 未过期：从原过期时间增加/减少天数
-		newExpiresAt = sub.ExpiresAt.AddDate(0, 0, days)
+		newExpiresAt = addValidityDays(sub.ExpiresAt, days)
 	}
 
 	if newExpiresAt.After(MaxExpiresAt) {
@@ -538,6 +565,15 @@ func (s *SubscriptionService) ExtendSubscription(ctx context.Context, subscripti
 	if sub.Status == SubscriptionStatusExpired {
 		if err := s.userSubRepo.UpdateStatus(ctx, subscriptionID, SubscriptionStatusActive); err != nil {
 			return nil, err
+		}
+	}
+
+	// 正向续订后重置当前配额窗口（daily/weekly/monthly），从续订时刻开始计算。
+	// days <= 0 为缩短场景，不重置窗口和用量。
+	if days > 0 {
+		windowStart := now
+		if err := s.resetAllUsageWindows(ctx, subscriptionID, windowStart); err != nil {
+			return nil, fmt.Errorf("reset subscription usage windows: %w", err)
 		}
 	}
 
