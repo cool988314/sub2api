@@ -509,7 +509,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		TotpEnabled:                      settings[SettingKeyTotpEnabled] == "true",
 		TurnstileEnabled:                 settings[SettingKeyTurnstileEnabled] == "true",
 		TurnstileSiteKey:                 settings[SettingKeyTurnstileSiteKey],
-		SiteName:                         s.getStringOrDefault(settings, SettingKeySiteName, "Sub2API"),
+		SiteName:                         s.getStringOrDefault(settings, SettingKeySiteName, "DD2API"),
 		SiteLogo:                         settings[SettingKeySiteLogo],
 		SiteSubtitle:                     s.getStringOrDefault(settings, SettingKeySiteSubtitle, "Subscription to API Conversion Platform"),
 		APIBaseURL:                       settings[SettingKeyAPIBaseURL],
@@ -1170,6 +1170,10 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyDefaultBalance] = strconv.FormatFloat(settings.DefaultBalance, 'f', 8, 64)
 	settings.AffiliateRebateRate = clampAffiliateRebateRate(settings.AffiliateRebateRate)
 	updates[SettingKeyAffiliateRebateRate] = strconv.FormatFloat(settings.AffiliateRebateRate, 'f', 8, 64)
+	settings.AffiliateSignupReward = clampAffiliateSignupReward(settings.AffiliateSignupReward)
+	updates[SettingKeyAffiliateSignupReward] = strconv.FormatFloat(settings.AffiliateSignupReward, 'f', 8, 64)
+	settings.AffiliateTransferThreshold = clampAffiliateTransferThreshold(settings.AffiliateTransferThreshold)
+	updates[SettingKeyAffiliateTransferThreshold] = strconv.FormatFloat(settings.AffiliateTransferThreshold, 'f', 8, 64)
 	updates[SettingKeyDefaultUserRPMLimit] = strconv.Itoa(settings.DefaultUserRPMLimit)
 	defaultSubsJSON, err := json.Marshal(settings.DefaultSubscriptions)
 	if err != nil {
@@ -1513,7 +1517,7 @@ func (s *SettingService) IsTotpEncryptionKeyConfigured() bool {
 func (s *SettingService) GetSiteName(ctx context.Context) string {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeySiteName)
 	if err != nil || value == "" {
-		return "Sub2API"
+		return "DD2API"
 	}
 	return value
 }
@@ -1674,7 +1678,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyEmailVerifyEnabled:                       "false",
 		SettingKeyRegistrationEmailSuffixWhitelist:         "[]",
 		SettingKeyPromoCodeEnabled:                         "true", // 默认启用优惠码功能
-		SettingKeySiteName:                                 "Sub2API",
+		SettingKeySiteName:                                 "DD2API",
 		SettingKeySiteLogo:                                 "",
 		SettingKeyPurchaseSubscriptionEnabled:              "false",
 		SettingKeyPurchaseSubscriptionURL:                  "",
@@ -1723,6 +1727,8 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyDefaultConcurrency:                       strconv.Itoa(s.cfg.Default.UserConcurrency),
 		SettingKeyDefaultBalance:                           strconv.FormatFloat(s.cfg.Default.UserBalance, 'f', 8, 64),
 		SettingKeyAffiliateRebateRate:                      strconv.FormatFloat(AffiliateRebateRateDefault, 'f', 8, 64),
+		SettingKeyAffiliateSignupReward:                    strconv.FormatFloat(AffiliateSignupRewardDefault, 'f', 8, 64),
+		SettingKeyAffiliateTransferThreshold:               strconv.FormatFloat(AffiliateTransferThresholdDefault, 'f', 8, 64),
 		SettingKeyDefaultUserRPMLimit:                      "0",
 		SettingKeyDefaultSubscriptions:                     "[]",
 		SettingKeyAuthSourceDefaultEmailBalance:            "0",
@@ -1808,7 +1814,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		TurnstileEnabled:                 settings[SettingKeyTurnstileEnabled] == "true",
 		TurnstileSiteKey:                 settings[SettingKeyTurnstileSiteKey],
 		TurnstileSecretKeyConfigured:     settings[SettingKeyTurnstileSecretKey] != "",
-		SiteName:                         s.getStringOrDefault(settings, SettingKeySiteName, "Sub2API"),
+		SiteName:                         s.getStringOrDefault(settings, SettingKeySiteName, "DD2API"),
 		SiteLogo:                         settings[SettingKeySiteLogo],
 		SiteSubtitle:                     s.getStringOrDefault(settings, SettingKeySiteSubtitle, "Subscription to API Conversion Platform"),
 		APIBaseURL:                       settings[SettingKeyAPIBaseURL],
@@ -1854,6 +1860,16 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		result.AffiliateRebateRate = clampAffiliateRebateRate(rebateRate)
 	} else {
 		result.AffiliateRebateRate = AffiliateRebateRateDefault
+	}
+	if signupReward, err := strconv.ParseFloat(settings[SettingKeyAffiliateSignupReward], 64); err == nil {
+		result.AffiliateSignupReward = clampAffiliateSignupReward(signupReward)
+	} else {
+		result.AffiliateSignupReward = AffiliateSignupRewardDefault
+	}
+	if transferThreshold, err := strconv.ParseFloat(settings[SettingKeyAffiliateTransferThreshold], 64); err == nil {
+		result.AffiliateTransferThreshold = clampAffiliateTransferThreshold(transferThreshold)
+	} else {
+		result.AffiliateTransferThreshold = AffiliateTransferThresholdDefault
 	}
 	result.DefaultSubscriptions = parseDefaultSubscriptions(settings[SettingKeyDefaultSubscriptions])
 
@@ -2148,6 +2164,32 @@ func clampAffiliateRebateRate(value float64) float64 {
 	}
 	if value > AffiliateRebateRateMax {
 		return AffiliateRebateRateMax
+	}
+	return value
+}
+
+func clampAffiliateSignupReward(value float64) float64 {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return AffiliateSignupRewardDefault
+	}
+	if value < AffiliateSignupRewardMin {
+		return AffiliateSignupRewardMin
+	}
+	if value > AffiliateSignupRewardMax {
+		return AffiliateSignupRewardMax
+	}
+	return value
+}
+
+func clampAffiliateTransferThreshold(value float64) float64 {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return AffiliateTransferThresholdDefault
+	}
+	if value < AffiliateTransferThresholdMin {
+		return AffiliateTransferThresholdMin
+	}
+	if value > AffiliateTransferThresholdMax {
+		return AffiliateTransferThresholdMax
 	}
 	return value
 }

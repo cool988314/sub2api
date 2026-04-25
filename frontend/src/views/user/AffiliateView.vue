@@ -60,9 +60,9 @@
           <div class="mt-5 rounded-xl border border-primary-200 bg-primary-50 p-4 dark:border-primary-900/40 dark:bg-primary-900/20">
             <p class="text-sm font-medium text-primary-800 dark:text-primary-200">{{ t('affiliate.tips.title') }}</p>
             <ul class="mt-2 space-y-1 text-sm text-primary-700 dark:text-primary-300">
-              <li>1. {{ t('affiliate.tips.line1') }}</li>
-              <li>2. {{ t('affiliate.tips.line2') }}</li>
-              <li>3. {{ t('affiliate.tips.line3') }}</li>
+              <li>1. {{ t('affiliate.tips.line1', { signupRewardAmount: formatCurrency(detail.signup_reward_amount) }) }}</li>
+              <li>2. {{ t('affiliate.tips.line2', { rebateRatePercent: detail.rebate_rate_percent }) }}</li>
+              <li>3. {{ t('affiliate.tips.line3', { transferThreshold: formatCurrency(detail.transfer_threshold) }) }}</li>
             </ul>
           </div>
         </div>
@@ -71,11 +71,13 @@
           <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('affiliate.transfer.title') }}</h3>
-              <p class="mt-1 text-sm text-gray-500 dark:text-dark-400">{{ t('affiliate.transfer.description') }}</p>
+              <p class="mt-1 text-sm text-gray-500 dark:text-dark-400">
+                {{ t('affiliate.transfer.description', { threshold: formatCurrency(detail.transfer_threshold) }) }}
+              </p>
             </div>
             <button
               class="btn btn-primary"
-              :disabled="transferring || detail.aff_quota <= 0"
+              :disabled="transferring || !detail.can_transfer"
               @click="transferQuota"
             >
               <Icon v-if="transferring" name="refresh" size="sm" class="animate-spin" />
@@ -83,8 +85,16 @@
               <span>{{ transferring ? t('affiliate.transfer.transferring') : t('affiliate.transfer.button') }}</span>
             </button>
           </div>
-          <p v-if="detail.aff_quota <= 0" class="mt-3 text-sm text-amber-600 dark:text-amber-400">
-            {{ t('affiliate.transfer.empty') }}
+          <p v-if="!detail.can_transfer" class="mt-3 text-sm text-amber-600 dark:text-amber-400">
+            {{
+              detail.aff_quota <= 0
+                ? t('affiliate.transfer.empty')
+                : t('affiliate.transfer.thresholdNotMet', {
+                    threshold: formatCurrency(detail.transfer_threshold),
+                    current: formatCurrency(detail.aff_quota),
+                    shortfall: formatCurrency(detail.transfer_shortfall),
+                  })
+            }}
           </p>
         </div>
 
@@ -179,7 +189,7 @@ async function copyInviteLink(): Promise<void> {
 }
 
 async function transferQuota(): Promise<void> {
-  if (!detail.value || detail.value.aff_quota <= 0 || transferring.value) return
+  if (!detail.value || !detail.value.can_transfer || transferring.value) return
   transferring.value = true
   try {
     const resp = await userAPI.transferAffiliateQuota()

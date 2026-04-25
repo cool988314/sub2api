@@ -62,7 +62,7 @@ INSERT INTO user_affiliates (user_id, aff_code, aff_quota, aff_history_quota, cr
 VALUES ($1, $2, $3, $3, NOW(), NOW())`, u.ID, affCode, 12.34)
 	require.NoError(t, err)
 
-	transferred, balance, err := repo.TransferQuotaToBalance(txCtx, u.ID)
+	transferred, balance, err := repo.TransferQuotaToBalance(txCtx, u.ID, 5)
 	require.NoError(t, err)
 	require.InDelta(t, 12.34, transferred, 1e-9)
 	require.InDelta(t, 17.84, balance, 1e-9)
@@ -121,7 +121,7 @@ func TestAffiliateRepository_AccrueQuota_ReusesOuterTransaction(t *testing.T) {
 	_, err = repo.EnsureUserAffiliate(txCtx, invitee.ID)
 	require.NoError(t, err)
 
-	bound, err := repo.BindInviter(txCtx, invitee.ID, inviter.ID)
+	bound, err := repo.BindInviter(txCtx, invitee.ID, inviter.ID, 0)
 	require.NoError(t, err)
 	require.True(t, bound, "invitee must bind to inviter")
 
@@ -173,7 +173,7 @@ INSERT INTO user_affiliates (user_id, aff_code, aff_quota, aff_history_quota, cr
 VALUES ($1, $2, 0, 0, NOW(), NOW())`, u.ID, affCode)
 	require.NoError(t, err)
 
-	transferred, balance, err := repo.TransferQuotaToBalance(txCtx, u.ID)
+	transferred, balance, err := repo.TransferQuotaToBalance(txCtx, u.ID, 5)
 	require.ErrorIs(t, err, service.ErrAffiliateQuotaEmpty)
 	require.InDelta(t, 0.0, transferred, 1e-9)
 	require.InDelta(t, 0.0, balance, 1e-9)

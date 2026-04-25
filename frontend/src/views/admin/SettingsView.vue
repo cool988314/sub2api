@@ -2182,6 +2182,62 @@
                   <label
                     class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
                   >
+                    {{
+                      translateOrFallback(
+                        "admin.settings.defaults.affiliateSignupReward",
+                        "邀请注册奖励",
+                      )
+                    }}
+                  </label>
+                  <input
+                    v-model.number="form.affiliate_signup_reward"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    class="input"
+                    placeholder="3.00"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{
+                      translateOrFallback(
+                        "admin.settings.defaults.affiliateSignupRewardHint",
+                        "新用户通过邀请链接注册成功后，奖励给邀请人的返利额度",
+                      )
+                    }}
+                  </p>
+                </div>
+                <div>
+                  <label
+                    class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    {{
+                      translateOrFallback(
+                        "admin.settings.defaults.affiliateTransferThreshold",
+                        "返利划转门槛",
+                      )
+                    }}
+                  </label>
+                  <input
+                    v-model.number="form.affiliate_transfer_threshold"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    class="input"
+                    placeholder="5.00"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{
+                      translateOrFallback(
+                        "admin.settings.defaults.affiliateTransferThresholdHint",
+                        "返利额度达到该值后，才允许划转到余额",
+                      )
+                    }}
+                  </p>
+                </div>
+                <div>
+                  <label
+                    class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
                     {{ t("admin.settings.defaults.defaultConcurrency") }}
                   </label>
                   <input
@@ -3940,7 +3996,7 @@
                       v-model="form.payment_product_name_prefix"
                       type="text"
                       class="input"
-                      placeholder="Sub2API"
+                      placeholder="DD2API"
                     />
                   </div>
                   <div>
@@ -3962,7 +4018,7 @@
                       class="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300"
                     >
                       {{
-                        (form.payment_product_name_prefix || "Sub2API") +
+                        (form.payment_product_name_prefix || "DD2API") +
                         " 100 " +
                         (form.payment_product_name_suffix || "CNY")
                       }}
@@ -4997,12 +5053,14 @@ const form = reactive<SettingsForm>({
   totp_enabled: false,
   totp_encryption_key_configured: false,
   default_balance: 0,
-  affiliate_rebate_rate: 20,
+  affiliate_rebate_rate: 10,
+  affiliate_signup_reward: 3,
+  affiliate_transfer_threshold: 5,
   default_concurrency: 1,
   default_subscriptions: [],
   force_email_on_third_party_signup: false,
   default_user_rpm_limit: 0,
-  site_name: "Sub2API",
+  site_name: "DD2API",
   site_logo: "",
   site_subtitle: "Subscription to API Conversion Platform",
   api_base_url: "",
@@ -5146,6 +5204,11 @@ const form = reactive<SettingsForm>({
   // Available Channels feature switch
   available_channels_enabled: false,
 });
+
+function translateOrFallback(key: string, fallback: string): string {
+  const translated = t(key);
+  return translated === key ? fallback : translated;
+}
 
 const authSourceDefaults = reactive<AuthSourceDefaultsState>(
   buildAuthSourceDefaultsState({}),
@@ -5923,6 +5986,14 @@ async function saveSettings() {
       affiliate_rebate_rate: Math.min(
         100,
         Math.max(0, Number(form.affiliate_rebate_rate) || 0),
+      ),
+      affiliate_signup_reward: Math.max(
+        0,
+        Number(form.affiliate_signup_reward) || 0,
+      ),
+      affiliate_transfer_threshold: Math.max(
+        0,
+        Number(form.affiliate_transfer_threshold) || 0,
       ),
       default_concurrency: form.default_concurrency,
       default_subscriptions: normalizedDefaultSubscriptions,

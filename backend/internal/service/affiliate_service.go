@@ -17,6 +17,7 @@ var (
 	ErrAffiliateCodeInvalid     = infraerrors.BadRequest("AFFILIATE_CODE_INVALID", "invalid affiliate code")
 	ErrAffiliateAlreadyBound    = infraerrors.Conflict("AFFILIATE_ALREADY_BOUND", "affiliate inviter already bound")
 	ErrAffiliateQuotaEmpty      = infraerrors.BadRequest("AFFILIATE_QUOTA_EMPTY", "no affiliate quota available to transfer")
+	ErrAffiliateQuotaThreshold  = infraerrors.BadRequest("AFFILIATE_TRANSFER_THRESHOLD_NOT_MET", "affiliate quota has not reached transfer threshold")
 )
 
 const (
@@ -72,15 +73,20 @@ type AffiliateDetail struct {
 	AffCount        int                `json:"aff_count"`
 	AffQuota        float64            `json:"aff_quota"`
 	AffHistoryQuota float64            `json:"aff_history_quota"`
+	SignupReward    float64            `json:"signup_reward_amount"`
+	RebateRate      float64            `json:"rebate_rate_percent"`
+	TransferMin     float64            `json:"transfer_threshold"`
+	TransferGap     float64            `json:"transfer_shortfall"`
+	CanTransfer     bool               `json:"can_transfer"`
 	Invitees        []AffiliateInvitee `json:"invitees"`
 }
 
 type AffiliateRepository interface {
 	EnsureUserAffiliate(ctx context.Context, userID int64) (*AffiliateSummary, error)
 	GetAffiliateByCode(ctx context.Context, code string) (*AffiliateSummary, error)
-	BindInviter(ctx context.Context, userID, inviterID int64) (bool, error)
+	BindInviter(ctx context.Context, userID, inviterID int64, signupReward float64) (bool, error)
 	AccrueQuota(ctx context.Context, inviterID, inviteeUserID int64, amount float64) (bool, error)
-	TransferQuotaToBalance(ctx context.Context, userID int64) (float64, float64, error)
+	TransferQuotaToBalance(ctx context.Context, userID int64, minAmount float64) (float64, float64, error)
 	ListInvitees(ctx context.Context, inviterID int64, limit int) ([]AffiliateInvitee, error)
 }
 
@@ -119,6 +125,11 @@ func (s *AffiliateService) GetAffiliateDetail(ctx context.Context, userID int64)
 	if err != nil {
 		return nil, err
 	}
+	rebateRatePercent := s.loadAffiliateRebateRatePercent(ctx)
+	signupReward := s.loadAffiliateSignupReward(ctx)
+	transferThreshold := s.loadAffiliateTransferThreshold(ctx)
+	transferShortfall := math.Max(0, transferThreshold-summary.AffQuota)
+
 	return &AffiliateDetail{
 		UserID:          summary.UserID,
 		AffCode:         summary.AffCode,
@@ -126,6 +137,11 @@ func (s *AffiliateService) GetAffiliateDetail(ctx context.Context, userID int64)
 		AffCount:        summary.AffCount,
 		AffQuota:        summary.AffQuota,
 		AffHistoryQuota: summary.AffHistoryQuota,
+		SignupReward:    signupReward,
+		RebateRate:      rebateRatePercent,
+		TransferMin:     transferThreshold,
+		TransferGap:     transferShortfall,
+		CanTransfer:     summary.AffQuota > 0 && summary.AffQuota >= transferThreshold,
 		Invitees:        invitees,
 	}, nil
 }
@@ -161,7 +177,7 @@ func (s *AffiliateService) BindInviterByCode(ctx context.Context, userID int64, 
 		return ErrAffiliateCodeInvalid
 	}
 
-	bound, err := s.repo.BindInviter(ctx, userID, inviterSummary.UserID)
+	bound, err := s.repo.BindInviter(ctx, userID, inviterSummary.UserID, s.loadAffiliateSignupReward(ctx))
 	if err != nil {
 		return err
 	}
@@ -212,7 +228,20 @@ func (s *AffiliateService) TransferAffiliateQuota(ctx context.Context, userID in
 		return 0, 0, infraerrors.ServiceUnavailable("SERVICE_UNAVAILABLE", "affiliate service unavailable")
 	}
 
-	transferred, balance, err := s.repo.TransferQuotaToBalance(ctx, userID)
+	summary, err := s.EnsureUserAffiliate(ctx, userID)
+	if err != nil {
+		return 0, 0, err
+	}
+	transferThreshold := s.loadAffiliateTransferThreshold(ctx)
+	if summary.AffQuota < transferThreshold {
+		return 0, 0, ErrAffiliateQuotaThreshold.WithMetadata(map[string]string{
+			"threshold": strconv.FormatFloat(transferThreshold, 'f', -1, 64),
+			"current":   strconv.FormatFloat(summary.AffQuota, 'f', -1, 64),
+			"shortfall": strconv.FormatFloat(math.Max(0, transferThreshold-summary.AffQuota), 'f', -1, 64),
+		})
+	}
+
+	transferred, balance, err := s.repo.TransferQuotaToBalance(ctx, userID, transferThreshold)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -260,6 +289,58 @@ func (s *AffiliateService) loadAffiliateRebateRatePercent(ctx context.Context) f
 		return AffiliateRebateRateMax
 	}
 	return rate
+}
+
+func (s *AffiliateService) loadAffiliateSignupReward(ctx context.Context) float64 {
+	if s == nil || s.settingRepo == nil {
+		return AffiliateSignupRewardDefault
+	}
+
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyAffiliateSignupReward)
+	if err != nil {
+		return AffiliateSignupRewardDefault
+	}
+
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		return AffiliateSignupRewardDefault
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return AffiliateSignupRewardDefault
+	}
+	if value < AffiliateSignupRewardMin {
+		return AffiliateSignupRewardMin
+	}
+	if value > AffiliateSignupRewardMax {
+		return AffiliateSignupRewardMax
+	}
+	return value
+}
+
+func (s *AffiliateService) loadAffiliateTransferThreshold(ctx context.Context) float64 {
+	if s == nil || s.settingRepo == nil {
+		return AffiliateTransferThresholdDefault
+	}
+
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyAffiliateTransferThreshold)
+	if err != nil {
+		return AffiliateTransferThresholdDefault
+	}
+
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		return AffiliateTransferThresholdDefault
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return AffiliateTransferThresholdDefault
+	}
+	if value < AffiliateTransferThresholdMin {
+		return AffiliateTransferThresholdMin
+	}
+	if value > AffiliateTransferThresholdMax {
+		return AffiliateTransferThresholdMax
+	}
+	return value
 }
 
 func roundTo(v float64, scale int) float64 {

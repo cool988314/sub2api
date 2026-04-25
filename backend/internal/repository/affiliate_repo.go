@@ -48,7 +48,7 @@ func (r *affiliateRepository) GetAffiliateByCode(ctx context.Context, code strin
 	return queryAffiliateByCode(ctx, client, code)
 }
 
-func (r *affiliateRepository) BindInviter(ctx context.Context, userID, inviterID int64) (bool, error) {
+func (r *affiliateRepository) BindInviter(ctx context.Context, userID, inviterID int64, signupReward float64) (bool, error) {
 	var bound bool
 	err := r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
 		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, userID); err != nil {
@@ -76,6 +76,19 @@ func (r *affiliateRepository) BindInviter(ctx context.Context, userID, inviterID
 			inviterID,
 		); err != nil {
 			return fmt.Errorf("increment inviter aff_count: %w", err)
+		}
+		if signupReward > 0 {
+			if _, err = txClient.ExecContext(txCtx,
+				"UPDATE user_affiliates SET aff_quota = aff_quota + $1, aff_history_quota = aff_history_quota + $1, updated_at = NOW() WHERE user_id = $2",
+				signupReward, inviterID,
+			); err != nil {
+				return fmt.Errorf("grant inviter signup reward: %w", err)
+			}
+			if _, err = txClient.ExecContext(txCtx, `
+INSERT INTO user_affiliate_ledger (user_id, action, amount, source_user_id, created_at, updated_at)
+VALUES ($1, 'signup_reward', $2, $3, NOW(), NOW())`, inviterID, signupReward, userID); err != nil {
+				return fmt.Errorf("insert affiliate signup reward ledger: %w", err)
+			}
 		}
 		bound = true
 		return nil
@@ -121,7 +134,7 @@ VALUES ($1, 'accrue', $2, $3, NOW(), NOW())`, inviterID, amount, inviteeUserID);
 	return applied, nil
 }
 
-func (r *affiliateRepository) TransferQuotaToBalance(ctx context.Context, userID int64) (float64, float64, error) {
+func (r *affiliateRepository) TransferQuotaToBalance(ctx context.Context, userID int64, minAmount float64) (float64, float64, error) {
 	var transferred float64
 	var newBalance float64
 
@@ -136,6 +149,7 @@ WITH claimed AS (
 	FROM user_affiliates
 	WHERE user_id = $1
 	  AND aff_quota > 0
+	  AND aff_quota >= $2
 	FOR UPDATE
 ),
 cleared AS (
@@ -147,7 +161,7 @@ cleared AS (
 	RETURNING c.amount
 )
 SELECT amount
-FROM cleared`, userID)
+FROM cleared`, userID, minAmount)
 		if err != nil {
 			return fmt.Errorf("claim affiliate quota: %w", err)
 		}

@@ -20,9 +20,15 @@ const (
 
 // Affiliate rebate settings
 const (
-	AffiliateRebateRateDefault = 20.0
-	AffiliateRebateRateMin     = 0.0
-	AffiliateRebateRateMax     = 100.0
+	AffiliateRebateRateDefault        = 10.0
+	AffiliateRebateRateMin            = 0.0
+	AffiliateRebateRateMax            = 100.0
+	AffiliateSignupRewardDefault      = 3.0
+	AffiliateSignupRewardMin          = 0.0
+	AffiliateSignupRewardMax          = 10000.0
+	AffiliateTransferThresholdDefault = 5.0
+	AffiliateTransferThresholdMin     = 0.0
+	AffiliateTransferThresholdMax     = 10000.0
 )
 
 // Platform constants
@@ -95,6 +101,8 @@ const (
 	SettingKeyFrontendURL                      = "frontend_url"                        // 前端基础URL，用于生成邮件中的重置密码链接
 	SettingKeyInvitationCodeEnabled            = "invitation_code_enabled"             // 是否启用邀请码注册
 	SettingKeyAffiliateRebateRate              = "affiliate_rebate_rate"               // 邀请返利比例（百分比，0-100）
+	SettingKeyAffiliateSignupReward            = "affiliate_signup_reward"             // 邀请注册奖励额度
+	SettingKeyAffiliateTransferThreshold       = "affiliate_transfer_threshold"        // 返利额度划转门槛
 
 	// 邮件服务设置
 	SettingKeySMTPHost     = "smtp_host"      // SMTP服务器地址

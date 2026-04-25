@@ -139,6 +139,11 @@ export interface UserAffiliateDetail {
   aff_count: number
   aff_quota: number
   aff_history_quota: number
+  signup_reward_amount: number
+  rebate_rate_percent: number
+  transfer_threshold: number
+  transfer_shortfall: number
+  can_transfer: boolean
   invitees: AffiliateInvitee[]
 }
 

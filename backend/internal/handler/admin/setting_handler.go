@@ -186,6 +186,8 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		DefaultConcurrency:                     settings.DefaultConcurrency,
 		DefaultBalance:                         settings.DefaultBalance,
 		AffiliateRebateRate:                    settings.AffiliateRebateRate,
+		AffiliateSignupReward:                  settings.AffiliateSignupReward,
+		AffiliateTransferThreshold:             settings.AffiliateTransferThreshold,
 		DefaultUserRPMLimit:                    settings.DefaultUserRPMLimit,
 		DefaultSubscriptions:                   defaultSubscriptions,
 		EnableModelFallback:                    settings.EnableModelFallback,
@@ -340,6 +342,8 @@ type UpdateSettingsRequest struct {
 	DefaultConcurrency                       int                               `json:"default_concurrency"`
 	DefaultBalance                           float64                           `json:"default_balance"`
 	AffiliateRebateRate                      *float64                          `json:"affiliate_rebate_rate"`
+	AffiliateSignupReward                    *float64                          `json:"affiliate_signup_reward"`
+	AffiliateTransferThreshold               *float64                          `json:"affiliate_transfer_threshold"`
 	DefaultUserRPMLimit                      int                               `json:"default_user_rpm_limit"`
 	DefaultSubscriptions                     []dto.DefaultSubscriptionSetting  `json:"default_subscriptions"`
 	AuthSourceDefaultEmailBalance            *float64                          `json:"auth_source_default_email_balance"`
@@ -479,6 +483,26 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	}
 	if affiliateRebateRate > service.AffiliateRebateRateMax {
 		affiliateRebateRate = service.AffiliateRebateRateMax
+	}
+	affiliateSignupReward := previousSettings.AffiliateSignupReward
+	if req.AffiliateSignupReward != nil {
+		affiliateSignupReward = *req.AffiliateSignupReward
+	}
+	if affiliateSignupReward < service.AffiliateSignupRewardMin {
+		affiliateSignupReward = service.AffiliateSignupRewardMin
+	}
+	if affiliateSignupReward > service.AffiliateSignupRewardMax {
+		affiliateSignupReward = service.AffiliateSignupRewardMax
+	}
+	affiliateTransferThreshold := previousSettings.AffiliateTransferThreshold
+	if req.AffiliateTransferThreshold != nil {
+		affiliateTransferThreshold = *req.AffiliateTransferThreshold
+	}
+	if affiliateTransferThreshold < service.AffiliateTransferThresholdMin {
+		affiliateTransferThreshold = service.AffiliateTransferThresholdMin
+	}
+	if affiliateTransferThreshold > service.AffiliateTransferThresholdMax {
+		affiliateTransferThreshold = service.AffiliateTransferThresholdMax
 	}
 	// 通用表格配置：兼容旧客户端未传字段时保留当前值。
 	if req.TableDefaultPageSize <= 0 {
@@ -1132,6 +1156,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		DefaultConcurrency:               req.DefaultConcurrency,
 		DefaultBalance:                   req.DefaultBalance,
 		AffiliateRebateRate:              affiliateRebateRate,
+		AffiliateSignupReward:            affiliateSignupReward,
+		AffiliateTransferThreshold:       affiliateTransferThreshold,
 		DefaultUserRPMLimit:              req.DefaultUserRPMLimit,
 		DefaultSubscriptions:             defaultSubscriptions,
 		EnableModelFallback:              req.EnableModelFallback,
@@ -1447,6 +1473,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		DefaultConcurrency:                     updatedSettings.DefaultConcurrency,
 		DefaultBalance:                         updatedSettings.DefaultBalance,
 		AffiliateRebateRate:                    updatedSettings.AffiliateRebateRate,
+		AffiliateSignupReward:                  updatedSettings.AffiliateSignupReward,
+		AffiliateTransferThreshold:             updatedSettings.AffiliateTransferThreshold,
 		DefaultUserRPMLimit:                    updatedSettings.DefaultUserRPMLimit,
 		DefaultSubscriptions:                   updatedDefaultSubscriptions,
 		EnableModelFallback:                    updatedSettings.EnableModelFallback,
@@ -1754,6 +1782,12 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.AffiliateRebateRate != after.AffiliateRebateRate {
 		changed = append(changed, "affiliate_rebate_rate")
+	}
+	if before.AffiliateSignupReward != after.AffiliateSignupReward {
+		changed = append(changed, "affiliate_signup_reward")
+	}
+	if before.AffiliateTransferThreshold != after.AffiliateTransferThreshold {
+		changed = append(changed, "affiliate_transfer_threshold")
 	}
 	if !equalDefaultSubscriptions(before.DefaultSubscriptions, after.DefaultSubscriptions) {
 		changed = append(changed, "default_subscriptions")
