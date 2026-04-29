@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -43,20 +44,78 @@ func (s *affiliateSettingRepoStub) GetAll(context.Context) (map[string]string, e
 }
 func (s *affiliateSettingRepoStub) Delete(context.Context, string) error { return s.err }
 
+func affiliateSettingServiceStub(values map[string]string) *SettingService {
+	return &SettingService{settingRepo: &affiliateSettingRepoStub{values: values}}
+}
+
+func TestResolveRebateRatePercent_PerUserOverride(t *testing.T) {
+	t.Parallel()
+	svc := &AffiliateService{}
+
+	require.InDelta(t, AffiliateRebateRateDefault,
+		svc.resolveRebateRatePercent(context.Background(), &AffiliateSummary{}), 1e-9)
+
+	rate := 50.0
+	require.InDelta(t, 50.0,
+		svc.resolveRebateRatePercent(context.Background(), &AffiliateSummary{AffRebateRatePercent: &rate}), 1e-9)
+
+	zero := 0.0
+	require.InDelta(t, 0.0,
+		svc.resolveRebateRatePercent(context.Background(), &AffiliateSummary{AffRebateRatePercent: &zero}), 1e-9)
+
+	tooHigh := 250.0
+	require.InDelta(t, AffiliateRebateRateMax,
+		svc.resolveRebateRatePercent(context.Background(), &AffiliateSummary{AffRebateRatePercent: &tooHigh}), 1e-9)
+
+	tooLow := -5.0
+	require.InDelta(t, AffiliateRebateRateMin,
+		svc.resolveRebateRatePercent(context.Background(), &AffiliateSummary{AffRebateRatePercent: &tooLow}), 1e-9)
+}
+
 func TestAffiliateRebateRatePercentSemantics(t *testing.T) {
 	t.Parallel()
 
-	svc := &AffiliateService{settingRepo: &affiliateSettingRepoStub{value: "1"}}
-	rate := svc.loadAffiliateRebateRatePercent(context.Background())
-	require.Equal(t, 1.0, rate)
+	svc := &AffiliateService{settingService: affiliateSettingServiceStub(map[string]string{
+		SettingKeyAffiliateRebateRate: "1",
+	})}
+	require.Equal(t, 1.0, svc.loadAffiliateRebateRatePercent(context.Background()))
 
-	svc.settingRepo = &affiliateSettingRepoStub{value: "0.2"}
-	rate = svc.loadAffiliateRebateRatePercent(context.Background())
-	require.Equal(t, 0.2, rate)
+	svc.settingService = affiliateSettingServiceStub(map[string]string{
+		SettingKeyAffiliateRebateRate: "0.2",
+	})
+	require.Equal(t, 0.2, svc.loadAffiliateRebateRatePercent(context.Background()))
 
-	svc.settingRepo = &affiliateSettingRepoStub{err: context.Canceled}
-	rate = svc.loadAffiliateRebateRatePercent(context.Background())
-	require.Equal(t, AffiliateRebateRateDefault, rate)
+	svc.settingService = affiliateSettingServiceStub(map[string]string{})
+	require.Equal(t, AffiliateRebateRateDefault, svc.loadAffiliateRebateRatePercent(context.Background()))
+}
+
+func TestIsEnabled_NilSettingServiceReturnsDefault(t *testing.T) {
+	t.Parallel()
+	svc := &AffiliateService{}
+	require.False(t, svc.IsEnabled(context.Background()))
+	require.Equal(t, AffiliateEnabledDefault, svc.IsEnabled(context.Background()))
+}
+
+func TestValidateExclusiveRate_BoundaryAndInvalid(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, validateExclusiveRate(nil))
+
+	for _, v := range []float64{0, 0.01, 50, 99.99, 100} {
+		v := v
+		require.NoError(t, validateExclusiveRate(&v), "value %v should be valid", v)
+	}
+
+	for _, v := range []float64{-0.01, 100.01, -100, 200} {
+		v := v
+		require.Error(t, validateExclusiveRate(&v), "value %v should be rejected", v)
+	}
+
+	nan := math.NaN()
+	require.Error(t, validateExclusiveRate(&nan))
+	posInf := math.Inf(1)
+	require.Error(t, validateExclusiveRate(&posInf))
+	negInf := math.Inf(-1)
+	require.Error(t, validateExclusiveRate(&negInf))
 }
 
 type affiliateRepoStub struct {
@@ -93,8 +152,16 @@ func (s *affiliateRepoStub) BindInviter(_ context.Context, userID, inviterID int
 	return s.bindResult, s.bindErr
 }
 
-func (s *affiliateRepoStub) AccrueQuota(context.Context, int64, int64, float64) (bool, error) {
+func (s *affiliateRepoStub) AccrueQuota(context.Context, int64, int64, float64, int) (bool, error) {
 	return true, nil
+}
+
+func (s *affiliateRepoStub) GetAccruedRebateFromInvitee(context.Context, int64, int64) (float64, error) {
+	return 0, nil
+}
+
+func (s *affiliateRepoStub) ThawFrozenQuota(context.Context, int64) (float64, error) {
+	return 0, nil
 }
 
 func (s *affiliateRepoStub) TransferQuotaToBalance(_ context.Context, userID int64, minAmount float64) (float64, float64, error) {
@@ -106,6 +173,20 @@ func (s *affiliateRepoStub) TransferQuotaToBalance(_ context.Context, userID int
 
 func (s *affiliateRepoStub) ListInvitees(context.Context, int64, int) ([]AffiliateInvitee, error) {
 	return s.invitees, nil
+}
+
+func (s *affiliateRepoStub) UpdateUserAffCode(context.Context, int64, string) error { return nil }
+func (s *affiliateRepoStub) ResetUserAffCode(context.Context, int64) (string, error) {
+	return "", nil
+}
+func (s *affiliateRepoStub) SetUserRebateRate(context.Context, int64, *float64) error {
+	return nil
+}
+func (s *affiliateRepoStub) BatchSetUserRebateRate(context.Context, []int64, *float64) error {
+	return nil
+}
+func (s *affiliateRepoStub) ListUsersWithCustomSettings(context.Context, AffiliateAdminFilter) ([]AffiliateAdminEntry, int64, error) {
+	return nil, 0, nil
 }
 
 func TestBindInviterByCode_UsesSignupRewardSetting(t *testing.T) {
@@ -123,8 +204,11 @@ func TestBindInviterByCode_UsesSignupRewardSetting(t *testing.T) {
 		bindResult: true,
 	}
 	svc := &AffiliateService{
-		repo:        repo,
-		settingRepo: &affiliateSettingRepoStub{value: "3"},
+		repo: repo,
+		settingService: affiliateSettingServiceStub(map[string]string{
+			SettingKeyAffiliateEnabled:      "true",
+			SettingKeyAffiliateSignupReward: "3",
+		}),
 	}
 
 	err := svc.BindInviterByCode(context.Background(), 2, "ABCDEFGHJKLM")
@@ -146,8 +230,10 @@ func TestTransferAffiliateQuota_RequiresThreshold(t *testing.T) {
 		},
 	}
 	svc := &AffiliateService{
-		repo:        repo,
-		settingRepo: &affiliateSettingRepoStub{value: "5"},
+		repo: repo,
+		settingService: affiliateSettingServiceStub(map[string]string{
+			SettingKeyAffiliateTransferThreshold: "5",
+		}),
 	}
 
 	_, _, err := svc.TransferAffiliateQuota(context.Background(), 1)
@@ -168,16 +254,17 @@ func TestGetAffiliateDetail_ExposesProgramSettings(t *testing.T) {
 	}
 	svc := &AffiliateService{
 		repo: repo,
-		settingRepo: &affiliateSettingRepoStub{values: map[string]string{
+		settingService: affiliateSettingServiceStub(map[string]string{
 			SettingKeyAffiliateRebateRate:        "10",
 			SettingKeyAffiliateSignupReward:      "3",
 			SettingKeyAffiliateTransferThreshold: "5",
-		}},
+		}),
 	}
 
 	detail, err := svc.GetAffiliateDetail(context.Background(), 1)
 	require.NoError(t, err)
 	require.Equal(t, 10.0, detail.RebateRate)
+	require.Equal(t, 10.0, detail.EffectiveRebateRatePercent)
 	require.Equal(t, AffiliateSignupRewardDefault, detail.SignupReward)
 	require.Equal(t, AffiliateTransferThresholdDefault, detail.TransferMin)
 	require.Equal(t, 2.0, detail.TransferGap)
@@ -199,19 +286,23 @@ func TestIsValidAffiliateCodeFormat(t *testing.T) {
 		in   string
 		want bool
 	}{
-		{"valid canonical", "ABCDEFGHJKLM", true},
+		{"valid canonical 12-char", "ABCDEFGHJKLM", true},
 		{"valid all digits 2-9", "234567892345", true},
 		{"valid mixed", "A2B3C4D5E6F7", true},
-		{"too short", "ABCDEFGHJKL", false},
-		{"too long", "ABCDEFGHJKLMN", false},
-		{"contains excluded letter I", "IBCDEFGHJKLM", false},
-		{"contains excluded letter O", "OBCDEFGHJKLM", false},
-		{"contains excluded digit 0", "0BCDEFGHJKLM", false},
-		{"contains excluded digit 1", "1BCDEFGHJKLM", false},
+		{"valid admin custom short", "VIP1", true},
+		{"valid admin custom with hyphen", "NEW-USER", true},
+		{"valid admin custom with underscore", "VIP_2026", true},
+		{"valid 32-char max", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", true},
+		{"letter I now allowed", "IBCDEFGHJKLM", true},
+		{"letter O now allowed", "OBCDEFGHJKLM", true},
+		{"digit 0 now allowed", "0BCDEFGHJKLM", true},
+		{"digit 1 now allowed", "1BCDEFGHJKLM", true},
+		{"too short (3 chars)", "ABC", false},
+		{"too long (33 chars)", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456", false},
 		{"lowercase rejected (caller must ToUpper first)", "abcdefghjklm", false},
 		{"empty", "", false},
-		{"12-byte utf8 non-ascii", "ÄÄÄÄÄÄ", false}, // 6×2 bytes = 12 bytes, bytes out of charset
-		{"ascii punctuation", "ABCDEFGHJK.M", false},
+		{"utf8 non-ascii", "\u00c4\u00c4\u00c4\u00c4\u00c4\u00c4", false},
+		{"ascii punctuation .", "ABCDEFGHJK.M", false},
 		{"whitespace", "ABCDEFGHJK M", false},
 	}
 	for _, tc := range cases {

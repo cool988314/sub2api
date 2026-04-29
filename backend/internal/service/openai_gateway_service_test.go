@@ -227,6 +227,41 @@ func TestOpenAIGatewayService_GenerateSessionHash_AttachesLegacyHashToContext(t 
 	require.NotEmpty(t, openAILegacySessionHashFromContext(c.Request.Context()))
 }
 
+func TestOpenAIGatewayService_GenerateExplicitSessionHash_SkipsContentFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat"}`)
+
+	t.Run("stateless image body stays unstuck", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+		require.Empty(t, svc.GenerateExplicitSessionHash(c, body))
+		require.Empty(t, openAILegacySessionHashFromContext(c.Request.Context()))
+	})
+
+	t.Run("prompt_cache_key is explicit", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+		got := svc.GenerateExplicitSessionHash(c, []byte(`{"model":"gpt-image-2","prompt_cache_key":"image-session"}`))
+		require.Equal(t, fmt.Sprintf("%016x", xxhash.Sum64String("image-session")), got)
+		require.NotEmpty(t, openAILegacySessionHashFromContext(c.Request.Context()))
+	})
+
+	t.Run("header overrides body", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+		c.Request.Header.Set("session_id", "header-session")
+
+		got := svc.GenerateExplicitSessionHash(c, []byte(`{"prompt_cache_key":"body-session"}`))
+		require.Equal(t, fmt.Sprintf("%016x", xxhash.Sum64String("header-session")), got)
+	})
+}
+
 func TestOpenAIGatewayService_GenerateSessionHashWithFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -1117,6 +1152,46 @@ func TestOpenAIStreamingPreambleOnlyMissingTerminalReturnsFailover(t *testing.T)
 	require.Empty(t, rec.Body.String())
 }
 
+func TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   1,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{},
+	}
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"))
+		for i := 0; i < 6; i++ {
+			time.Sleep(250 * time.Millisecond)
+			_, _ = pw.Write([]byte("data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_1\"}}\n\n"))
+		}
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n"))
+	}()
+
+	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "model", "model")
+	_ = pr.Close()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Contains(t, rec.Body.String(), ":\n\n")
+	require.Contains(t, rec.Body.String(), "response.completed")
+}
+
 func TestOpenAIStreamingPolicyResponseFailedBeforeOutputPassesThrough(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
@@ -1324,6 +1399,41 @@ func TestOpenAIStreamingPassthroughResponseDoneWithoutDoneMarkerStillSucceeds(t 
 	go func() {
 		defer func() { _ = pw.Close() }()
 		_, _ = pw.Write([]byte("data: {\"type\":\"response.done\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":1}}}}\n\n"))
+	}()
+
+	result, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "", "")
+	_ = pr.Close()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 2, result.usage.InputTokens)
+	require.Equal(t, 3, result.usage.OutputTokens)
+	require.Equal(t, 1, result.usage.CacheReadInputTokens)
+}
+
+func TestOpenAIStreamingPassthroughResponseIncompleteWithoutDoneMarkerStillSucceeds(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			MaxLineSize: defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{},
+	}
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.incomplete\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":1}}}}\n\n"))
 	}()
 
 	result, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "", "")
