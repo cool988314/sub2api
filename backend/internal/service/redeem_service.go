@@ -76,11 +76,16 @@ type RedeemService struct {
 	redeemRepo           RedeemCodeRepository
 	userRepo             UserRepository
 	subscriptionService  *SubscriptionService
+	affiliateService     *AffiliateService
 	cache                RedeemCache
 	billingCacheService  *BillingCacheService
 	entClient            *dbent.Client
 	authCacheInvalidator APIKeyAuthCacheInvalidator
 }
+
+type redeemContextKey string
+
+const redeemSkipAffiliateRebateKey redeemContextKey = "redeem_skip_affiliate_rebate"
 
 // NewRedeemService 创建兑换码服务实例
 func NewRedeemService(
@@ -101,6 +106,25 @@ func NewRedeemService(
 		entClient:            entClient,
 		authCacheInvalidator: authCacheInvalidator,
 	}
+}
+
+func (s *RedeemService) SetAffiliateService(affiliateService *AffiliateService) {
+	if s == nil {
+		return
+	}
+	s.affiliateService = affiliateService
+}
+
+func withSkipAffiliateRebate(ctx context.Context) context.Context {
+	return context.WithValue(ctx, redeemSkipAffiliateRebateKey, true)
+}
+
+func shouldSkipAffiliateRebate(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	skip, _ := ctx.Value(redeemSkipAffiliateRebateKey).(bool)
+	return skip
 }
 
 // GenerateRandomCode 生成随机兑换码
@@ -313,6 +337,7 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 	}
 
 	// 执行兑换逻辑（兑换码已被锁定，此时可安全操作）
+	var creditedBalance float64
 	switch redeemCode.Type {
 	case RedeemTypeBalance:
 		amount := redeemCode.Value
@@ -323,6 +348,7 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 		if err := s.userRepo.UpdateBalance(txCtx, userID, amount); err != nil {
 			return nil, fmt.Errorf("update user balance: %w", err)
 		}
+		creditedBalance = amount
 
 	case RedeemTypeConcurrency:
 		delta := int(redeemCode.Value)
@@ -368,6 +394,12 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 
 	// 事务提交成功后失效缓存
 	s.invalidateRedeemCaches(ctx, userID, redeemCode)
+
+	if redeemCode.Type == RedeemTypeBalance && creditedBalance > 0 && s.affiliateService != nil && !shouldSkipAffiliateRebate(ctx) {
+		if _, err := s.affiliateService.AccrueInviteRebate(ctx, userID, creditedBalance); err != nil {
+			return nil, fmt.Errorf("accrue affiliate rebate: %w", err)
+		}
+	}
 
 	// 重新获取更新后的兑换码
 	redeemCode, err = s.redeemRepo.GetByID(ctx, redeemCode.ID)
